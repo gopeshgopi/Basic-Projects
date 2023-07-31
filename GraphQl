@@ -1,0 +1,593 @@
+    public static String getSchemaFromFileName(final String file) throws IOException {
+
+        return new String(Files.readAllBytes(Paths.get("/temp/graphql/" + file + ".graphql")));
+        //    To test in local please comment the above line and uncomment the below
+        //    return new String(Files.readAllBytes( Paths.get("src/main/resources/graphql/" + file + ".graphql") ));
+
+    }
+	
+	
+---------------------------------------
+
+
+
+
+import java.util.*;
+
+
+@Service
+public class ProfessionalGraphqlUtil {
+
+    private static final Logger logger = LoggerFactory.getLogger(ProfessionalGraphqlUtil.class);
+    @Autowired
+    GraphQLWebClient graphQLWebClient;
+    @Autowired
+    Mustache.Compiler mustacheCompiler;
+    @Autowired
+    MybatisUtil util;
+    @Autowired
+    ProfessionalTokenUtil token;
+
+    @Autowired
+    ObjectMapper objectMapper;
+    HashMap<String, List<Map<String, Object>>> preProcessedMap;
+    List<HashMap<String, Object>> finalOutput;
+    List<HashMap<String, Object>> intermediateList;
+    List<String> specialtyList;
+    HashMap<String, String> specialtyMap;
+    int count = 0;
+    @Value("${getProfessionalService}")
+    private String serviceUrl;
+    @Value("${XUpstreamEnv}")
+    private String XUpstreamEnv;
+
+    public void graphqlUtility(HashMap resourceMap, String name, boolean nameSearch, ProviderSearchCriteria input) {
+
+        Map<String, Object> map = new HashMap<>();
+
+        if (name.equals("Practitioner")) {
+            map.put("Id", resourceMap.get("id").toString());
+            map.put("providerID", Integer.parseInt(resourceMap.get("id").toString()));
+
+            List nameobj = (List) resourceMap.get("name");
+            if (nameobj.size() > 0) {
+                for (Object n : nameobj) {
+                    HashMap nameMap = (HashMap) n;
+                    map.put("pcpLastName", nameMap.get("family"));
+                    List<String> namesArr = (List<String>) nameMap.get("given");
+                    map.put("pcpFirstName", namesArr.size() > 0 ? namesArr.get(0) : "");
+                    map.put("pcpMiddleName", namesArr.size() > 1 ? namesArr.get(1) : "");
+                }
+
+            } else {
+                map.put("pcpFirstName", "");
+                map.put("pcpLastName", "");
+                map.put("pcpMiddleName", "");
+            }
+
+            List practitionerIdentifiers = (List) resourceMap.get("identifier");
+            for (Object identifiers : practitionerIdentifiers) {
+                HashMap valIdMap = (HashMap) identifiers;
+                String idValue = (String) valIdMap.get("value");
+                if (idValue.equals(resourceMap.get("id").toString())) {
+                    HashMap periodMap = (HashMap) valIdMap.get("period");
+                    map.put("PcpEffectiveDate", periodMap.get("start"));
+                    map.put("PcpCancelDate", periodMap.get("end"));
+                }
+            }
+
+            List extensionArr = (List) resourceMap.get("extension");
+            List<HashMap> extension1Arr = null;
+            List codeArr = null;
+            specialtyList = new ArrayList<>();
+
+            for (Object obj : extensionArr) {
+                HashMap<String, HashMap> obj2Map = new HashMap();
+                HashMap objMap = (HashMap) obj;
+                extension1Arr = (List<HashMap>) objMap.get("extension");
+                extension1Arr.stream().forEach(obmap ->
+                {
+                    if (obmap.get("url").equals("spclTypCode")) {
+                        obj2Map.put(obmap.get("url").toString(), (HashMap) obmap.get("valueCodeableConcept"));
+                    } else if (obmap.get("url").equals("contractOrgCode")) {
+                        obj2Map.put(obmap.get("url").toString(), obmap);
+                    } else if (obmap.get("url").equals("primaryCode")) {
+                        obj2Map.put(obmap.get("url").toString(), obmap);
+                    }
+
+                });
+                if (nameSearch == true) {
+
+                    if (obj2Map.get("contractOrgCode") != null && obj2Map.get("contractOrgCode").get("valueString").toString().equals("UHN") && obj2Map.get("primaryCode") != null && obj2Map.get("primaryCode").get("valueString").toString().equals("P")) {
+                        codeArr = (List) obj2Map.get("spclTypCode").get("coding");
+                        codeArr.stream().forEach(obj12 -> {
+                            HashMap obj3Map = (HashMap) obj12;
+                            String specialtyCode = (String) obj3Map.get("code");
+                            specialtyList.add(specialtyCode);
+                        });
+                    }
+                } else {
+                    if (obj2Map.get("contractOrgCode") != null && obj2Map.get("contractOrgCode").get("valueString").toString().equals("UHN")) {
+                        codeArr = (List) obj2Map.get("spclTypCode").get("coding");
+                        codeArr.stream().forEach(obj12 -> {
+                            HashMap obj3Map = (HashMap) obj12;
+                            String specialtyCode = (String) obj3Map.get("code");
+                            specialtyList.add(specialtyCode);
+                        });
+                    }
+                }
+
+            }
+
+
+            map.put("specialtyCodesList", specialtyList);
+
+
+        } else if (name.equals("PractitionerRole")) {
+            String practitionerRoleId = resourceMap.get("id").toString().split("-")[0];
+            map.put("PracRoleID", practitionerRoleId);
+//            map.put("specialtyCodesList","077");
+            map.put("LocationID", resourceMap.get("id").toString());
+            List practitionerRoleIdentifiers = (List) resourceMap.get("identifier");
+            for (Object identifiers : practitionerRoleIdentifiers) {
+                HashMap practitionerIdMap = (HashMap) identifiers;
+                HashMap typeMap = (HashMap) practitionerIdMap.get("type");
+                if (typeMap.get("text").equals("NPI")) {
+                    if (practitionerIdMap.get("value") == null) {
+                        map.put("NPI", "");
+                    } else {
+                        map.put("NPI", practitionerIdMap.get("value"));
+                    }
+                }
+                if (typeMap.get("text").equals("NDB Tax ID Number")) {
+                    map.put("taxID", practitionerIdMap.get("value"));
+                    HashMap periodMap = (HashMap) practitionerIdMap.get("period");
+                    map.put("taxEffectiveDate", periodMap.get("start"));
+                    map.put("taxCancelDate", periodMap.get("end"));
+                }
+                if (typeMap.get("text").equals("Distance")) {
+                    if (practitionerIdMap.get("value").toString().length() == 0) {
+                        map.put("distance", "0.000");
+                    } else {
+                        map.put("distance", practitionerIdMap.get("value"));
+                    }
+                }
+            }
+
+
+        } else if (name.equals("Location")) {
+            String locationId = resourceMap.get("id").toString();
+            String addressTypeCode = resourceMap.get("id").toString().split("-")[4];
+            map.put("LocationID", locationId);
+            map.put("AddressTypeCd", addressTypeCode);
+            HashMap addressMap = (HashMap) resourceMap.get("address");
+            map.put("AddressID", addressMap.get("id") != null ? addressMap.get("id") : "");
+            map.put("city", addressMap.get("city") != null ? addressMap.get("city") : "");
+            map.put("state", addressMap.get("state") != null ? addressMap.get("state") : "");
+            String postalCode = addressMap.get("postalCode") != null ? addressMap.get("postalCode").toString().split("-")[0] : "";
+            map.put("zipCD", postalCode);
+
+            List Line = (List) addressMap.get("line");
+            map.put("addr1", Line.size() > 0 ? Line.get(0) : "");
+            List phoneArr = (List) resourceMap.get("telecom");
+            String phoneAreaCode = "000";
+            String phone = "0000000";
+            if (phoneArr.size() > 0) {
+                for (Object ph : phoneArr) {
+                    HashMap phoneMap = (HashMap) ph;
+                    if (phoneMap.get("system") != null && phoneMap.get("system").equals(("Phone")) && phoneMap.get("use").equals(("WORK"))) {
+                        if (phoneMap.get("value") != null) {
+                            String phoneNumber = phoneMap.get("value").toString();
+                            phoneAreaCode = phoneNumber.substring(0, 3);
+                            phone = phoneNumber.substring(4, 12).replace("-", "");
+
+                        }
+                    }
+
+                }
+
+            }
+            map.put("phoneAreaCode", phoneAreaCode);
+            map.put("phoneNumber", phone);
+
+            List locationIdentifiers = (List) resourceMap.get("identifier");
+            for (Object identifiers : locationIdentifiers) {
+                HashMap locationIdentifierMap = (HashMap) identifiers;
+                HashMap locationIdentifierMapVal = (HashMap) locationIdentifierMap.get("type");
+
+
+                if (locationIdentifierMapVal.get("text").equals("NDB_MPIN_Sequence")) {
+                    Integer addressSequenceNumber = Integer.parseInt(locationIdentifierMap.get("value").toString());
+
+                    map.put("addressSeqNum", addressSequenceNumber);
+                } else {
+                    map.put("addressSeqNum", 0);
+                }
+
+
+            }
+
+
+        }
+
+        List Categories = Arrays.asList("Practitioner", "PractitionerRole", "Location");
+        if (Categories.contains(name)) {
+            if (preProcessedMap.containsKey(name)) {
+                List existingRecords = preProcessedMap.get(name);
+                existingRecords.add(map);
+                preProcessedMap.put(name, existingRecords);
+            } else {
+                List newRecords = new ArrayList();
+                newRecords.add(map);
+                preProcessedMap.put(name, newRecords);
+            }
+
+        }
+
+
+    }
+
+
+    private void mapperFunction(HashMap<String,
+            List<Map<String, Object>>> preProcessedMap) {
+
+        List practitionerObj = (List) preProcessedMap.get("Practitioner");
+        List practitionerRoleObj = (List) preProcessedMap.get("PractitionerRole");
+        List locationObj = (List) preProcessedMap.get("Location");
+
+        for (Object practitioner : practitionerObj) {
+            HashMap practitionerMap = (HashMap) practitioner;
+            String practitionerId = (String) practitionerMap.get("Id");
+
+            for (Object practitionerRole : practitionerRoleObj) {
+                HashMap practitionerRoleMap = (HashMap) practitionerRole;
+                if (Integer.parseInt(practitionerRoleMap.get("PracRoleID").toString()) == (Integer.parseInt(practitionerId))) {
+                    String locationId = (String) practitionerRoleMap.get("LocationID");
+                    HashMap<String, Object> finalMap = new HashMap();
+                    for (Object location : locationObj) {
+                        HashMap locationMap = (HashMap) location;
+                        if (locationMap.get("LocationID").equals(locationId)) {
+                            finalMap.putAll(practitionerMap);
+                            finalMap.putAll(practitionerRoleMap);
+                            finalMap.putAll(locationMap);
+                            finalOutput.add(finalMap);
+                            break;
+
+                        }
+
+                    }
+
+                }
+
+            }
+
+
+        }
+
+
+        for (Object obj : finalOutput) {
+            HashMap ObjMap = (HashMap) obj;
+            List SpecialtyArr = (List) ObjMap.get("specialtyCodesList");
+            if (SpecialtyArr.size() > 0) {
+                for (Object specCode : SpecialtyArr) {
+                    HashMap SpecMap = new HashMap<>(ObjMap);
+
+                    if (SpecMap.containsKey("specialty")) {
+                        SpecMap.remove("specialty");
+
+                    }
+                    SpecMap.put("specialty", specCode);
+
+                    intermediateList.add(SpecMap);
+                }
+            } else {
+                ObjMap.put("specialty", "");
+                intermediateList.add(ObjMap);
+            }
+
+
+        }
+
+
+    }
+
+    @Retryable(maxAttempts = 3, value = RuntimeException.class, backoff = @Backoff(100))
+    public Map<String, Object> getProfessionalGraphql(ProviderSearchCriteria input, boolean nameSearch) {
+
+        preProcessedMap = new HashMap<>();
+        finalOutput = new ArrayList<>();
+        intermediateList = new ArrayList<>();
+
+        String graphqlQuery = null;
+
+        try {
+            graphqlQuery = GraphqlSchemaReaderUtil.getSchemaFromFileName("professionalDetails");
+
+        } catch (Exception e) {
+            logger.error("Unable to Read Professional Graphql Query");
+        }
+
+        Map<String, String> reqMap = new HashMap<String, String>();
+        specialtyMap = new HashMap();
+
+        specialtyMap.put("01", "037");
+        specialtyMap.put("02", "011");
+        specialtyMap.put("03", "001");
+        specialtyMap.put("04", "008");
+        specialtyMap.put("05", "001,008");
+        specialtyMap.put("06", "011,001,008");
+
+        int iProvType = Integer.parseInt(input.getProviderType());
+
+        reqMap.put("uhcDivVal", "");
+        reqMap.put("uhcProviderTypeVal", "");
+        reqMap.put("uhcProviderNumber", "");
+        reqMap.put("npiVal", "");
+        reqMap.put("ndbVal", "");
+        reqMap.put("marketTypeCDVal", "");
+        if (iProvType == ProviderSearchCriteria.NDB_PROVIDER_ID_TYPE) {
+            reqMap.put("ndbVal", input.getProviderID()); // 3571198
+
+        } else if (iProvType == ProviderSearchCriteria.UHC_ID_TYPE) {
+            String uhcid = input.getProviderID(); //EVC 0016-0049687
+            reqMap.put("uhcDivVal", uhcid.substring(0, 3));
+            reqMap.put("uhcProviderTypeVal", uhcid.substring(3, 7));
+            reqMap.put("uhcProviderNumber", uhcid.substring(7));
+        } else if (iProvType == ProviderSearchCriteria.NPI_ID_TYPE) {
+            reqMap.put("npiVal", input.getProviderID());
+
+        }
+
+
+        if (nameSearch == true) {
+
+            reqMap.put("addressPrimaryCodeVal", "Primary");
+        } else {
+
+            reqMap.put("addressPrimaryCodeVal", "");
+        }
+
+        reqMap.put("marketTypeCDVal", input.getMarketTypCD());
+        if (input.getSpecialtyCD().equals("")) {
+            reqMap.put("specialtyCDVal", "");
+        } else {
+
+            reqMap.put("specialtyCDVal", specialtyMap.get(input.getSpecialtyCD()));
+        }
+        reqMap.put("countyVal", input.getCounty());
+        reqMap.put("radiusVal", input.getRadius()); // 1
+        reqMap.put("zipVal", input.getZipcode()); // 43227
+        reqMap.put("lastnameVal", input.getProviderLastName()); // MANGUM
+        reqMap.put("citynameVal", input.getCity()); // GOODING
+        reqMap.put("stateVal", input.getStateCD()); // ID
+
+
+        final String graphqlQueryParms = mustacheCompiler
+                .compile(graphqlQuery)
+                .execute(reqMap);
+
+        Map<String, Object> tokenMap = Collections.synchronizedMap(new HashMap<>());
+
+        try {
+            tokenMap = token.callSecurityToken();
+
+        } catch (Exception e) {
+            logger.info("Exception occured while fetching the ndb token");
+        }
+
+        WebClient webClient = WebClient.builder()
+                .baseUrl(serviceUrl).exchangeStrategies(ExchangeStrategies.builder()
+                        .codecs(configurer -> configurer
+                                .defaultCodecs()
+                                .maxInMemorySize(16 * 1024 * 1024))
+                        .build())
+                .build();
+
+        graphQLWebClient = GraphQLWebClient.newInstance(webClient, objectMapper);
+
+        GraphQLRequest request = null;
+        GraphQLResponse response = null;
+
+
+        try {
+
+
+            request = GraphQLRequest.builder().query(graphqlQueryParms).header("Content-Type", "application/json").header("Authorization", "Bearer " + tokenMap.get("RestSecurityToken").toString()).header("X-Upstream-Env", XUpstreamEnv).header("Connection", "keep-alive").build();
+
+            response = graphQLresp(request);
+        } catch (Exception e) {
+            ;
+
+            logger.error(e.getMessage() + "Exception Occured while calling Professional Graphql Service");
+        }
+        HashMap result = (HashMap) response.getFirst(Object.class);
+
+        List entryList = (List) result.get("entry");
+        if (entryList != null && entryList.size() > 0) {
+
+            for (Object res : entryList) {
+                HashMap dataMap = (HashMap) res;
+                HashMap resMap = (HashMap) dataMap.get("resource");
+                if (resMap.get("resourceType") != null) {
+                    graphqlUtility(resMap, resMap.get("resourceType").toString(), nameSearch, input);
+                }
+            }
+
+
+            mapperFunction(preProcessedMap);
+        }
+
+
+        return util.getServiceResponse(intermediateList, new BaseCriteria());
+    }
+
+    GraphQLResponse graphQLresp(GraphQLRequest request) {
+        GraphQLResponse response = graphQLWebClient.post(request).block();
+        return response;
+
+
+    }
+
+
+}
+
+-------------------------------------------------------------------------
+
+Token UTil
+
+
+
+
+
+@Service
+public class ProviderTokenUtil {
+    private static final Logger LOGGER = LoggerFactory.getLogger(ProviderTokenUtil.class);
+    private static final String TOKEN_AVAILABLE = "securityTokenAvailable";
+    private static final String HOLD_TIME = "holdTime";
+    private static final String EXPIRES_TIME_CACHE = "expiresTimeCache";
+    private static final String REST_TOKEN = "RestSecurityToken";
+    private static final String TOKEN_TYPE = "tokenType";
+
+    private final Map<String, Object> securityTokenMap = Collections.synchronizedMap(new HashMap<>());
+
+    @Autowired
+    RestTemplate restTemplate;
+
+    @Value("${token.url:#{null}}")
+    private String primaryTokenUrl;
+
+    @Value("${token.clientId}")
+    private String clientId;
+
+    @Value("${token.clientSecret}")
+    private String clientSecret;
+
+    @Value("${token.OrgScope}")
+    private String Orgscope;
+
+
+    public ProviderTokenUtil() {
+        securityTokenMap.put(TOKEN_AVAILABLE, Boolean.FALSE);
+        securityTokenMap.put(HOLD_TIME, 0L);
+        securityTokenMap.put(EXPIRES_TIME_CACHE, 0L);
+        securityTokenMap.put(REST_TOKEN, "");
+        securityTokenMap.put(TOKEN_TYPE, "");
+    }
+
+    /*
+     * This method is used to get security token
+     * */
+    public Map<String, Object> callSecurityToken() throws Exception {
+        if ((boolean) securityTokenMap.get(TOKEN_AVAILABLE)) {
+            securityTokenMap.put(REST_TOKEN, checkAndGetSecurityToken());
+        } else {
+            LOGGER.debug("No security token found, so calling OAUTH Token Service");
+            securityTokenMap.put(REST_TOKEN, holdSecurityToken());
+        }
+        return securityTokenMap;
+    }
+
+    /*
+     * This method is used to check the availability of security token
+     * */
+    public String checkAndGetSecurityToken() throws Exception {
+        String securityToken;
+        long currentTime = System.currentTimeMillis();
+
+        // setting the holding and expires time cached
+        long holdTime = (long) securityTokenMap.get(HOLD_TIME);
+        long expiresTimeCached = (long) securityTokenMap.get(EXPIRES_TIME_CACHE);
+
+        // setting the expiry time
+        long expiryTime = currentTime - holdTime;
+        long expiresTimeInMs = (expiresTimeCached - 20) * 1000;
+
+        securityToken = (expiryTime < expiresTimeInMs) ? (String) securityTokenMap.get(REST_TOKEN) : holdSecurityToken();
+        return securityToken;
+    }
+
+    /*
+     * This method is used to set and hold security token
+     * */
+    public String holdSecurityToken() throws Exception {
+        LOGGER.debug("Generating new security token");
+        String securityToken;
+
+        securityToken = getRestSecurityOauthToken();
+
+        securityTokenMap.put(HOLD_TIME, System.currentTimeMillis());
+        securityTokenMap.put(TOKEN_AVAILABLE, Boolean.TRUE);
+
+        return securityToken;
+    }
+
+    /*
+     * This method is used to generate security token
+     * */
+    public String getRestSecurityOauthToken() throws Exception {
+
+        MultiValueMap<String, String> secTokenMap;
+        String oauthToken = null;
+        ResponseEntity<TokenResponse> response = null;
+        LOGGER.debug(" Oauth endpoint is {}", primaryTokenUrl);
+        secTokenMap = getSecTknFormParams();
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
+            headers.setAccept(getAcceptedFormats());
+            HttpEntity<MultiValueMap<String, String>> entity = new HttpEntity<>(secTokenMap, headers);
+            Instant start = Instant.now();
+            LOGGER.info("Generating token: {}", new DateTime());
+            try {
+                response = restTemplate.postForEntity(primaryTokenUrl, entity, TokenResponse.class);
+            } catch (Exception ex) {
+                LOGGER.info("Exception Occured");
+            }
+            LOGGER.info("Token Generated: {}", new DateTime());
+            Instant end = Instant.now();
+            Duration timeElapsed = Duration.between(start, end);
+            LOGGER.debug("Token fetch time {}", timeElapsed);
+        } catch (RestClientException e) {
+            throw new Exception(e);
+        } catch (Exception ex) {
+            throw new Exception(ex);
+        }
+        if (HttpStatus.OK.value() == response.getStatusCodeValue()) {
+            TokenResponse oauthResp = response.getBody();
+            if (Optional.ofNullable(oauthResp).isPresent()) {
+                oauthToken = oauthResp.getAccessToken();
+                // Hold expires_in time to compare with current time - holdtime
+                securityTokenMap.put(EXPIRES_TIME_CACHE, (long) oauthResp.getExpiresIn());
+                securityTokenMap.put(TOKEN_TYPE, oauthResp.getTokenType());
+            } else {
+                securityTokenMap.put(EXPIRES_TIME_CACHE, 0L);
+            }
+        } else {
+            throw new Exception("Got Invalid Token lookup response");
+        }
+        return oauthToken;
+    }
+
+    /*
+     * This method is used to set header parameters
+     * */
+    public MultiValueMap<String, String> getSecTknFormParams() {
+        MultiValueMap<String, String> map;
+        map = new LinkedMultiValueMap<>();
+        map.add("grant_type", "client_credentials");
+        map.add("client_id", clientId);
+        map.add("client_secret", clientSecret);
+        map.add("scope", Orgscope);
+        return map;
+    }
+
+    /*
+     * This method is used to set accepted formats
+     * */
+    public List<MediaType> getAcceptedFormats() {
+        List<MediaType> mediaTypes = new LinkedList<>();
+        mediaTypes.add(MediaType.APPLICATION_JSON);
+        LOGGER.debug("oauth accepted format is {}", mediaTypes);
+        return mediaTypes;
+    }
+}
